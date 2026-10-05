@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt-validate-lint:
+    name: Format, validate, lint, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.7
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform validate (complete example)
+        working-directory: examples/complete
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl" -f compact
+
+      - name: Docs are up to date
+        run: |
+          curl -fsSL https://github.com/terraform-docs/terraform-docs/releases/download/v0.24.0/terraform-docs-v0.24.0-linux-amd64.tar.gz | tar xz terraform-docs
+          for m in modules/*/; do ./terraform-docs -c .terraform-docs.yml "$m"; done
+          rm terraform-docs
+          git diff --exit-code -- modules || (echo "::error::Run terraform-docs and commit the READMEs"; exit 1)
+
+  test:
+    name: terraform test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [network, alb, ecs-cluster, ecs-service, rds-postgres, msk-serverless, github-oidc]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.7
+
+      - name: Unit tests with mocked AWS provider (no credentials, no cost)
+        working-directory: modules/${{ matrix.module }}
+        run: |
+          terraform init -backend=false -input=false
+          terraform test
+
+  security:
+    name: Checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          compact: true
